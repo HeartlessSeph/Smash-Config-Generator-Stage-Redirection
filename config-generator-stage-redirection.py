@@ -3,6 +3,7 @@ import argparse, json, re, sys
 from pathlib import Path
 import cutie
 import xml.etree.cElementTree as ET
+import traceback
 
 # Built from dir_info_with_files_trimmed.json from https://github.com/CSharpM7/reslotter
 ALLOWED_EXTENSIONS = {
@@ -126,7 +127,29 @@ def build_base_dir_infos(tree_root, base_stage, current_stage):
 
     walk(stage_branch, f"stage/{current_stage}")
     return sorted(res)
-
+    
+    
+def gather_base_stages(tree_root):
+    # Simply gets the base game stages and saves to a set
+    stage_node = (((tree_root or {}).get("directories") or {}).get("stage") or {}).get("directories") or {}
+    res = {k.lower().strip() for k in stage_node.keys()}
+    return sorted(res)
+    
+def find_valid_database_json(root: Path, current_stage: str):
+    database_path = root / "database"
+    if not database_path.exists():
+        return None
+    for x in database_path.glob("*.json"):
+        if not x.is_file(): continue
+        with open(x, "r", encoding="utf-8") as f:
+            cur_json = json.load(f)
+        if not "stage_database_entries" in cur_json: continue
+        for stage_entry in cur_json["stage_database_entries"]:
+            if "ui_stage_id" in stage_entry:
+                ui_stage = stage_entry["ui_stage_id"]
+                if ui_stage == f"ui_stage_{current_stage}": return Path(x)
+    return None         
+        
 
 def safe_rename(src: Path, dst: Path):
     if not src.exists(): return False
@@ -222,8 +245,19 @@ def main():
 
     root = Path(args.root).resolve()
     stage_dir, detected_stage = find_single_stage_dir(root)
+    
+    with open(args.base, "r", encoding="utf-8") as f:
+        base_data = json.load(f)
+    
+    base_file_array = base_data.get("file_array")
+    dirs_tree = base_data.get("dirs")
+    if dirs_tree is None or base_file_array is None:
+        raise Exception(f"Unable to obtain file_array or dirs from {args.base}. Please ensure file is valid.")
+        
+    base_stages_set = gather_base_stages(dirs_tree)
 
-    is_renamed = user_yes_no("Have you already renamed the files to the new stage name?")
+    # is_renamed = user_yes_no("Have you already renamed the files to the new stage name?")
+    is_renamed = detected_stage.lower().strip() not in base_stages_set
     if is_renamed:
         base_stage = user_input("Enter the base stage to redirect (e.g., dk_waterfall): ",
                                 "No base stage provided. Please input a proper stage name.\n")
@@ -232,14 +266,6 @@ def main():
         base_stage = detected_stage
         current_stage = user_input("Enter your new stage name (e.g., dk_hijinxs): ",
                                    "No new stage name was provided. Please input a proper stage name.\n")
-
-    with open(args.base, "r", encoding="utf-8") as f:
-        base_data = json.load(f)
-
-    base_file_array = base_data.get("file_array")
-    dirs_tree = base_data.get("dirs")
-    if dirs_tree is None or base_file_array is None:
-        raise Exception(f"Unable to obtain file_array or dirs from {args.base}. Please ensure file is valid.")
 
     # This shouldn't cause issues, all files are unique
     base_file_set = set(base_file_array)
@@ -340,13 +366,18 @@ def main():
         create_stage_xmsbt(stage_msbt_name, root / "ui" / "message" / "msg_name.xmsbt", current_stage)
         print(f"File written to {str(xmsbt_path)}")
         
-    is_create_database = user_yes_no(f"\nDo you want to generate a database json for your stage?\nIt will be named {current_stage}.json in the database folder.")
+    # is_create_database = user_yes_no(f"\nDo you want to generate a database json for your stage?\nIt will be named {current_stage}.json in the database folder.")
+    is_create_database = True
+    database_path = root / "database" / f"{current_stage}.json"
+    database_json = find_valid_database_json(root, current_stage)
+    if database_json is not None:
+        is_create_database = user_yes_no(f"Json containing stage information detected at {database_json}. Would you like to overwrite this json file?")
+        database_path = database_json
     if is_create_database:
-        database_path = root / "database" / f"{current_stage}.json"
         database_json = {}
         database_json["stage_database_entries"] = [{   
         "ui_stage_id": f"ui_stage_{current_stage}",
-        "clone_from_ui_stage_id": f"ui_stage_{base_stage}",
+        "clone_from_ui_stage_id": f"ui_stage_{base_stage.replace("battlefield", "battle_field")}",
         "name_id": current_stage,
         "disp_order": 127,
 		"is_dlc": False
@@ -398,5 +429,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print("\nAn error occurred:")
-        print(e)
+        print(traceback.format_exc())
     input("\nPress Enter to exit...")
